@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Text,
   View,
@@ -23,7 +23,7 @@ import GoogleCloudSpeechToText, {
 } from 'rn-google-cloud-speech-to-text';
 
 // Demo API key placeholder - Replace with your actual API key
-const GOOGLE_CLOUD_API_KEY = 'YOUR_GOOGLE_CLOUD_API_KEY_HERE';
+const GOOGLE_CLOUD_API_KEY = 'AAA';
 
 interface LogEntry {
   timestamp: string;
@@ -36,11 +36,13 @@ export default function App() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [apiKey, setApiKey] = useState<string>(GOOGLE_CLOUD_API_KEY);
-  const [languageCode, setLanguageCode] = useState<string>('en-US');
+  const [languageCode, setLanguageCode] = useState<string>('vi-VN');
   const [speechToFile, setSpeechToFile] = useState<boolean>(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [currentFileId, setCurrentFileId] = useState<string>('');
+  const [audioFilePath, setAudioFilePath] = useState<string>('');
 
   // Legacy multiply test
   const multiplyResult = multiply(3, 7);
@@ -49,8 +51,9 @@ export default function App() {
     const timestamp = new Date().toLocaleTimeString();
     setLogs((prev) => [
       { timestamp, type, message },
-      ...prev.slice(0, 49), // Keep only last 50 logs
+      ...prev.slice(0, 99), // Keep only last 100 logs
     ]);
+    console.log(`[${timestamp}] ${type.toUpperCase()}: ${message}`);
   };
 
   useEffect(() => {
@@ -86,13 +89,13 @@ export default function App() {
   };
 
   const initializeSpeechRecognition = () => {
-    if (!apiKey || apiKey === GOOGLE_CLOUD_API_KEY) {
-      Alert.alert(
-        'API Key Required',
-        'Please enter your Google Cloud Speech-to-Text API key to use this demo.'
-      );
-      return;
-    }
+    // if (!apiKey || apiKey === GOOGLE_CLOUD_API_KEY) {
+    //   Alert.alert(
+    //     'API Key Required',
+    //     'Please enter your Google Cloud Speech-to-Text API key to use this demo.'
+    //   );
+    //   return;
+    // }
 
     try {
       GoogleCloudSpeechToText.setApiKey(apiKey);
@@ -133,7 +136,7 @@ export default function App() {
   const onSpeechRecognized = (result: SpeechRecognizeEvent) => {
     addLog('success', `Final result: ${result.transcript}`);
     setTranscript(result.transcript);
-    setIsRecording(false);
+    // Don't set isRecording to false here - let onVoiceEnd handle it
     setIsLoading(false);
   };
 
@@ -144,7 +147,9 @@ export default function App() {
 
   const onVoiceStart = (event: VoiceStartEvent) => {
     addLog('info', `Voice started - Sample rate: ${event.sampleRate}Hz`);
+    addLog('info', `State: isRecording=${isRecording}, isLoading=${isLoading}`);
     setIsRecording(true);
+    setIsLoading(false); // Clear loading state when recording actually starts
   };
 
   const onVoice = (event: VoiceEvent) => {
@@ -153,8 +158,13 @@ export default function App() {
 
   const onVoiceEnd = () => {
     addLog('info', 'Voice ended');
+    addLog(
+      'info',
+      `State before: isRecording=${isRecording}, isLoading=${isLoading}`
+    );
     setIsRecording(false);
     setAudioLevel(0);
+    setIsLoading(false); // Ensure loading state is cleared
   };
 
   const startRecognizing = async () => {
@@ -167,6 +177,10 @@ export default function App() {
     }
 
     try {
+      addLog(
+        'info',
+        `Starting - Current state: isRecording=${isRecording}, isLoading=${isLoading}`
+      );
       setIsLoading(true);
       addLog('info', 'Starting speech recognition...');
 
@@ -176,7 +190,8 @@ export default function App() {
       });
 
       addLog('success', `Started recording - File ID: ${result.fileId}`);
-      setIsRecording(true);
+      setCurrentFileId(result.fileId);
+      // Don't set isRecording here, wait for onVoiceStart event
     } catch (error) {
       addLog('error', `Start error: ${error}`);
       setIsLoading(false);
@@ -185,14 +200,50 @@ export default function App() {
 
   const stopRecognizing = async () => {
     try {
+      addLog(
+        'info',
+        `Stopping - Current state: isRecording=${isRecording}, isLoading=${isLoading}`
+      );
       setIsLoading(true);
       addLog('info', 'Stopping speech recognition...');
 
       await GoogleCloudSpeechToText.stop();
       addLog('success', 'Stopped recording');
-      setIsRecording(false);
+      // Don't set isRecording here, wait for onVoiceEnd event
     } catch (error) {
       addLog('error', `Stop error: ${error}`);
+      setIsRecording(false); // Force reset on error
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getAudioFile = async () => {
+    if (!currentFileId) {
+      Alert.alert(
+        'No File ID',
+        'No recording file ID available. Please record first with "Save speech to file" enabled.'
+      );
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      addLog('info', `Getting audio file for ID: ${currentFileId}...`);
+
+      const result = await GoogleCloudSpeechToText.getAudioFile(currentFileId, {
+        sampleRate: 44100,
+        bitrate: 128000,
+        channel: 2,
+      });
+
+      setAudioFilePath(result.path);
+      addLog(
+        'success',
+        `Audio file saved: ${result.path} (${result.size} bytes)`
+      );
+    } catch (error) {
+      addLog('error', `Get audio file error: ${error}`);
     } finally {
       setIsLoading(false);
     }
@@ -325,6 +376,27 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
+          {/* Get Audio File Button */}
+          <TouchableOpacity
+            style={[
+              styles.button,
+              styles.audioFileButton,
+              (!currentFileId || !speechToFile) && styles.buttonDisabled,
+            ]}
+            onPress={getAudioFile}
+            disabled={!currentFileId || !speechToFile || isLoading}
+          >
+            <Text style={styles.buttonText}>Get Audio File</Text>
+          </TouchableOpacity>
+
+          {/* Audio File Path Display */}
+          {audioFilePath && (
+            <View style={styles.audioFilePathContainer}>
+              <Text style={styles.audioFilePathLabel}>Audio File:</Text>
+              <Text style={styles.audioFilePathText}>{audioFilePath}</Text>
+            </View>
+          )}
+
           {/* Audio Level Indicator */}
           {isRecording && (
             <View style={styles.audioLevelContainer}>
@@ -383,23 +455,29 @@ export default function App() {
           </View>
 
           <View style={styles.logsContainer}>
-            {logs.length === 0 ? (
-              <Text style={styles.noLogs}>No logs yet...</Text>
-            ) : (
-              logs.map((log, index) => (
-                <View key={index} style={styles.logEntry}>
-                  <Text style={styles.logTimestamp}>{log.timestamp}</Text>
-                  <Text
-                    style={[
-                      styles.logMessage,
-                      { color: getLogColor(log.type) },
-                    ]}
-                  >
-                    {log.message}
-                  </Text>
-                </View>
-              ))
-            )}
+            <ScrollView
+              style={styles.logsScrollView}
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+            >
+              {logs.length === 0 ? (
+                <Text style={styles.noLogs}>No logs yet...</Text>
+              ) : (
+                logs.map((log, index) => (
+                  <View key={index} style={styles.logEntry}>
+                    <Text style={styles.logTimestamp}>{log.timestamp}</Text>
+                    <Text
+                      style={[
+                        styles.logMessage,
+                        { color: getLogColor(log.type) },
+                      ]}
+                    >
+                      {log.message}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
           </View>
         </View>
       </ScrollView>
@@ -521,6 +599,10 @@ const styles = StyleSheet.create({
   stopButton: {
     backgroundColor: '#ff4444',
   },
+  audioFileButton: {
+    backgroundColor: '#ff9800',
+    marginTop: 8,
+  },
   buttonDisabled: {
     backgroundColor: '#ccc',
   },
@@ -528,6 +610,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  audioFilePathContainer: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 6,
+  },
+  audioFilePathLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+  },
+  audioFilePathText: {
+    fontSize: 12,
+    color: '#333',
+    fontFamily: 'monospace',
   },
   audioLevelContainer: {
     marginBottom: 12,
@@ -576,7 +675,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9f9f9',
     borderRadius: 6,
     padding: 12,
-    maxHeight: 200,
+    height: 300, // Increased height
+  },
+  logsScrollView: {
+    flex: 1,
   },
   noLogs: {
     fontSize: 14,
@@ -587,19 +689,23 @@ const styles = StyleSheet.create({
   },
   logEntry: {
     flexDirection: 'row',
-    paddingVertical: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
+    marginBottom: 2,
   },
   logTimestamp: {
     fontSize: 12,
     color: '#999',
-    width: 70,
+    width: 80,
     marginRight: 10,
+    fontFamily: 'monospace',
   },
   logMessage: {
-    fontSize: 12,
+    fontSize: 13,
     flex: 1,
+    lineHeight: 18,
   },
   clearButton: {
     paddingHorizontal: 12,

@@ -42,11 +42,16 @@ android {
   buildTypes {
     release {
       minifyEnabled false
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
     }
   }
 
   lintOptions {
     disable "GradleCompatible"
+  }
+
+  packagingOptions {
+    resources.excludes.add("META-INF/*")
   }
 
   compileOptions {
@@ -74,14 +79,46 @@ def kotlin_version = getExtOrDefault("kotlinVersion")
 dependencies {
   implementation "com.facebook.react:react-android"
   implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-  
-  // Google Cloud Speech-to-Text
-  implementation 'com.google.cloud:google-cloud-speech:4.65.0'
-  implementation 'io.grpc:grpc-okhttp:1.74.0'
-  
+
+  // Google Cloud Speech-to-Text (High-level client)
+  implementation ('com.google.cloud:google-cloud-speech:4.67.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+
+  // gRPC dependencies for SpeechGrpc stub classes
+  implementation ('com.google.api.grpc:proto-google-cloud-speech-v1:4.67.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+  implementation ('com.google.api.grpc:grpc-google-cloud-speech-v1:4.67.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+
+  // Core gRPC dependencies - use protobuf instead of protobuf-lite
+  implementation ('io.grpc:grpc-okhttp:1.74.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+  implementation ('io.grpc:grpc-stub:1.74.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+  implementation ('io.grpc:grpc-protobuf:1.74.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+  implementation ('io.grpc:grpc-auth:1.74.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+  implementation ('io.grpc:grpc-netty-shaded:1.74.0') {
+    exclude group: 'com.google.protobuf', module: 'protobuf-javalite'
+  }
+
+  // Force consistent protobuf version
+  implementation 'com.google.protobuf:protobuf-java:3.25.8'
+
   // Audio processing
   implementation 'androidx.media:media:1.7.0'
-  
+
   // Utilities
   implementation 'com.google.guava:guava:31.1-jre'
+
+  // Authentication
+  implementation 'com.google.auth:google-auth-library-oauth2-http:1.19.0'
 }
