@@ -42,6 +42,7 @@ android {
   buildTypes {
     release {
       minifyEnabled false
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
     }
   }
 
@@ -74,14 +75,14 @@ def kotlin_version = getExtOrDefault("kotlinVersion")
 dependencies {
   implementation "com.facebook.react:react-android"
   implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-  
+
   // Google Cloud Speech-to-Text
   implementation 'com.google.cloud:google-cloud-speech:4.65.0'
   implementation 'io.grpc:grpc-okhttp:1.74.0'
-  
+
   // Audio processing
   implementation 'androidx.media:media:1.7.0'
-  
+
   // Utilities
   implementation 'com.google.guava:guava:31.1-jre'
 }
