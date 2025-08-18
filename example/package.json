@@ -7,7 +7,14 @@
     "ios": "react-native run-ios",
     "start": "react-native start",
     "build:android": "react-native build-android --extra-params \"--no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a\"",
-    "build:ios": "react-native build-ios --mode Debug"
+    "build:ios": "react-native build-ios --mode Debug",
+    "clean": "react-native clean-cache",
+    "clean:android": "cd android && ./gradlew clean && cd ..",
+    "clean:ios": "cd ios && xcodebuild clean && rm -rf build && cd ..",
+    "pod:install": "cd ios && pod install && cd ..",
+    "dev:android": "npm run clean:android && npm run android",
+    "dev:ios": "npm run pod:install && npm run ios",
+    "reset": "npm run clean && npm run start -- --reset-cache"
   },
   "dependencies": {
     "react": "19.0.0",
