@@ -2,6 +2,7 @@ package com.rngooglecloudspeechtotext.speech
 
 import android.util.Log
 import com.google.cloud.speech.v1.RecognitionConfig
+import com.google.cloud.speech.v1.SpeechContext
 import com.google.cloud.speech.v1.SpeechGrpc
 import com.google.cloud.speech.v1.StreamingRecognitionConfig
 import com.google.cloud.speech.v1.StreamingRecognizeRequest
@@ -154,8 +155,10 @@ class SpeechRecognitionManager {
                 .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
                 .setSampleRateHertz(SAMPLE_RATE)
                 .setLanguageCode(currentLanguageCode)
-                .setEnableAutomaticPunctuation(true)
-                .setModel("latest_long")
+                .setModel("command_and_search")
+                .setEnableAutomaticPunctuation(false)
+                .setMaxAlternatives(1)
+                .addSpeechContexts(SpeechContext.newBuilder().addAllPhrases(listOf("một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "không")))
                 .setUseEnhanced(true)
                 .build()
 
