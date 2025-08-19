@@ -23,7 +23,7 @@ import GoogleCloudSpeechToText, {
 } from 'rn-google-cloud-speech-to-text';
 
 // Demo API key placeholder - Replace with your actual API key
-const GOOGLE_CLOUD_API_KEY = 'AAA';
+const GOOGLE_CLOUD_API_KEY = 'AIzaSyC_GjIDQDZyPlTn4wmnwVEF5Yxl3jkJvGA';
 
 interface LogEntry {
   timestamp: string;

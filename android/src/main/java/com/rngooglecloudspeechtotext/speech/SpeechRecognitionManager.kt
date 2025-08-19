@@ -1,28 +1,34 @@
 package com.rngooglecloudspeechtotext.speech
 
-import android.os.Build
 import android.util.Log
-import org.json.JSONObject
-import java.io.*
-import java.net.HttpURLConnection
-import java.net.URL
+import com.google.cloud.speech.v1.RecognitionConfig
+import com.google.cloud.speech.v1.SpeechGrpc
+import com.google.cloud.speech.v1.StreamingRecognitionConfig
+import com.google.cloud.speech.v1.StreamingRecognizeRequest
+import com.google.cloud.speech.v1.StreamingRecognizeResponse
+import com.google.protobuf.ByteString
+import io.grpc.*
+import io.grpc.ForwardingClientCall
+import io.grpc.stub.StreamObserver
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
-import java.util.Base64
+import java.util.concurrent.TimeUnit
 
 class SpeechRecognitionManager {
     companion object {
         private const val TAG = "SpeechRecognitionManager"
         private const val SAMPLE_RATE = 16000
-        private const val SPEECH_API_URL = "https://speech.googleapis.com/v1/speech:recognize"
-        private const val MAX_AUDIO_BUFFER_SIZE = 60 * 1024 // 60KB buffer for audio chunks
+        private const val SPEECH_API_HOST = "speech.googleapis.com"
+        private const val SPEECH_API_PORT = 443
     }
 
     private var apiKey: String? = null
     private var currentLanguageCode = "en-US"
     private val isRecognizing = AtomicBoolean(false)
-    private val audioBuffer = ByteArrayOutputStream()
-    private var bufferSize = 0
+
+    // gRPC components
+    private var channel: ManagedChannel? = null
+    private var speechClient: SpeechGrpc.SpeechStub? = null
+    private var requestObserver: StreamObserver<StreamingRecognizeRequest>? = null
 
     private var onPartialResult: ((String, Boolean) -> Unit)? = null
     private var onError: ((String, String?) -> Unit)? = null
@@ -56,12 +62,20 @@ class SpeechRecognitionManager {
             // Store the language code for use in recognition calls
             currentLanguageCode = languageCode
 
-            // Reset audio buffer
-            audioBuffer.reset()
-            bufferSize = 0
-            isRecognizing.set(true)
+            // Initialize gRPC channel with API key authentication
+            if (!initializeGrpcChannel()) {
+                onError?.invoke("GRPC_INIT_ERROR", "Failed to initialize gRPC channel")
+                return false
+            }
 
-            Log.i(TAG, "Speech recognition started with language: $languageCode")
+            // Start streaming recognition
+            if (!startStreamingRecognition()) {
+                onError?.invoke("STREAM_START_ERROR", "Failed to start streaming recognition")
+                return false
+            }
+
+            isRecognizing.set(true)
+            Log.i(TAG, "gRPC streaming recognition started with language: $languageCode")
             return true
 
         } catch (e: Exception) {
@@ -72,24 +86,21 @@ class SpeechRecognitionManager {
     }
 
     fun sendAudioData(audioData: ByteArray, length: Int) {
-        if (!isRecognizing.get()) {
+        if (!isRecognizing.get() || requestObserver == null) {
             return
         }
 
         try {
-            synchronized(audioBuffer) {
-                audioBuffer.write(audioData, 0, length)
-                bufferSize += length
+            // Send audio data directly to gRPC stream
+            val audioRequest = StreamingRecognizeRequest.newBuilder()
+                .setAudioContent(ByteString.copyFrom(audioData, 0, length))
+                .build()
 
-                // Process audio in chunks when buffer reaches a certain size
-                if (bufferSize >= MAX_AUDIO_BUFFER_SIZE) {
-                    processAudioBuffer()
-                }
-            }
+            requestObserver?.onNext(audioRequest)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error buffering audio data", e)
-            onError?.invoke("AUDIO_BUFFER_ERROR", e.message)
+            Log.e(TAG, "Error sending audio data to gRPC stream", e)
+            onError?.invoke("AUDIO_SEND_ERROR", e.message)
         }
     }
 
@@ -99,141 +110,162 @@ class SpeechRecognitionManager {
         }
 
         try {
-            // Process any remaining audio in buffer
-            if (bufferSize > 0) {
-                processAudioBuffer()
-            }
+            // Complete the gRPC stream
+            requestObserver?.onCompleted()
+
+            // Shutdown gRPC resources
+            cleanupGrpcResources()
 
             isRecognizing.set(false)
-            Log.i(TAG, "Speech recognition stopped")
+            Log.i(TAG, "gRPC streaming recognition stopped")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping speech recognition", e)
+            onError?.invoke("STOP_ERROR", e.message)
         }
     }
 
-    private fun processAudioBuffer() {
-        if (bufferSize == 0) return
-
-        thread {
-            try {
-                synchronized(audioBuffer) {
-                    val audioBytes = audioBuffer.toByteArray()
-                    audioBuffer.reset()
-                    bufferSize = 0
-
-                    // Send to Google Cloud Speech API
-                    recognizeAudio(audioBytes, currentLanguageCode)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error processing audio buffer", e)
-                onError?.invoke("PROCESSING_ERROR", e.message)
-            }
-        }
-    }
-
-    private fun recognizeAudio(audioData: ByteArray, languageCode: String = "en-US") {
+    private fun initializeGrpcChannel(): Boolean {
         try {
-            val url = URL("$SPEECH_API_URL?key=$apiKey")
-            val connection = url.openConnection() as HttpURLConnection
+            // Create gRPC channel with TLS
+            channel = ManagedChannelBuilder.forAddress(SPEECH_API_HOST, SPEECH_API_PORT)
+                .useTransportSecurity()
+                .build()
 
-            // Set up HTTP connection
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
-            connection.connectTimeout = 10000
-            connection.readTimeout = 30000
+            // Create API key interceptor
+            val apiKeyInterceptor = ApiKeyInterceptor(apiKey!!)
 
-            // Create request JSON
-            val audioBase64 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-              Base64.getEncoder().encodeToString(audioData)
-            } else {
-              TODO("VERSION.SDK_INT < O")
-            }
-          val requestJson = JSONObject().apply {
-                put("config", JSONObject().apply {
-                    put("encoding", "LINEAR16")
-                    put("sampleRateHertz", SAMPLE_RATE)
-                    put("languageCode", languageCode)
-                    put("enableAutomaticPunctuation", true)
-                    put("model", "latest_long")
-                    put("useEnhanced", true)
-                })
-                put("audio", JSONObject().apply {
-                    put("content", audioBase64)
-                })
-            }
+            // Create speech client with API key authentication
+            speechClient = SpeechGrpc.newStub(channel)
+                .withInterceptors(apiKeyInterceptor)
+                .withDeadlineAfter(300, TimeUnit.SECONDS)
 
-            // Send request
-            val outputStream = connection.outputStream
-            outputStream.write(requestJson.toString().toByteArray())
-            outputStream.flush()
-            outputStream.close()
-
-            // Read response
-            val responseCode = connection.responseCode
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val response = connection.inputStream.bufferedReader().readText()
-                handleResponse(response)
-            } else {
-                val errorResponse = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                Log.e(TAG, "API Error: $responseCode - $errorResponse")
-                onError?.invoke("API_ERROR", "HTTP $responseCode: $errorResponse")
-            }
-
+            return true
         } catch (e: Exception) {
-            Log.e(TAG, "Error calling speech recognition API", e)
-            onError?.invoke("NETWORK_ERROR", e.message)
+            Log.e(TAG, "Failed to initialize gRPC channel", e)
+            return false
         }
     }
 
-    private fun handleResponse(jsonResponse: String) {
+    private fun startStreamingRecognition(): Boolean {
         try {
-            val response = JSONObject(jsonResponse)
+            // Create streaming recognition config
+            val recognitionConfig = RecognitionConfig.newBuilder()
+                .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
+                .setSampleRateHertz(SAMPLE_RATE)
+                .setLanguageCode(currentLanguageCode)
+                .setEnableAutomaticPunctuation(true)
+                .setModel("latest_long")
+                .setUseEnhanced(true)
+                .build()
 
-            if (response.has("results")) {
-                val results = response.getJSONArray("results")
+            val streamingConfig = StreamingRecognitionConfig.newBuilder()
+                .setConfig(recognitionConfig)
+                .setInterimResults(true)
+                .setSingleUtterance(false)
+                .build()
 
-                if (results.length() > 0) {
-                    val result = results.getJSONObject(0)
-                    val alternatives = result.getJSONArray("alternatives")
+            // Create response observer
+            val responseObserver = createResponseObserver()
 
-                    if (alternatives.length() > 0) {
-                        val alternative = alternatives.getJSONObject(0)
-                        val transcript = alternative.getString("transcript")
-                        val confidence = alternative.optDouble("confidence", 0.0)
+            // Create request observer
+            requestObserver = speechClient?.streamingRecognize(responseObserver)
 
-                        Log.d(TAG, "Recognition result: '$transcript' (confidence: $confidence)")
+            // Send initial config request
+            val initialRequest = StreamingRecognizeRequest.newBuilder()
+                .setStreamingConfig(streamingConfig)
+                .build()
 
-                        // For API-based recognition, we consider all results as final
-                        // To simulate interim results, we could split this into partial calls
-                        onPartialResult?.invoke(transcript, true)
+            requestObserver?.onNext(initialRequest)
+
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start streaming recognition", e)
+            return false
+        }
+    }
+
+    private fun createResponseObserver(): StreamObserver<StreamingRecognizeResponse> {
+        return object : StreamObserver<StreamingRecognizeResponse> {
+            override fun onNext(response: StreamingRecognizeResponse) {
+                if (response.resultsCount > 0) {
+                    val result = response.getResults(0)
+                    if (result.alternativesCount > 0) {
+                        val alternative = result.getAlternatives(0)
+                        val transcript = alternative.transcript
+                        val isFinal = result.isFinal
+
+                        Log.d(TAG, "Recognition result: '$transcript' (isFinal: $isFinal)")
+                        onPartialResult?.invoke(transcript, isFinal)
                     }
-                } else {
-                    Log.d(TAG, "No recognition results in response")
-                    // This could be an interim result with no text
-                    onPartialResult?.invoke("", false)
                 }
-            } else if (response.has("error")) {
-                val error = response.getJSONObject("error")
-                val message = error.optString("message", "Unknown API error")
-                val code = error.optString("code", "UNKNOWN")
-                Log.e(TAG, "API returned error: $code - $message")
-                onError?.invoke("API_ERROR", "$code: $message")
             }
 
+            override fun onError(error: Throwable) {
+                Log.e(TAG, "gRPC stream error", error)
+                onError?.invoke("GRPC_ERROR", error.message)
+                cleanupGrpcResources()
+                isRecognizing.set(false)
+            }
+
+            override fun onCompleted() {
+                Log.d(TAG, "gRPC stream completed")
+                cleanupGrpcResources()
+                isRecognizing.set(false)
+            }
+        }
+    }
+
+    private fun cleanupGrpcResources() {
+        try {
+            requestObserver = null
+            speechClient = null
+
+            channel?.let {
+                if (!it.isShutdown) {
+                    it.shutdown()
+                    try {
+                        if (!it.awaitTermination(5, TimeUnit.SECONDS)) {
+                            it.shutdownNow()
+                        }
+                    } catch (e: InterruptedException) {
+                        Log.w(TAG, "Interrupted while waiting for channel termination", e)
+                        it.shutdownNow()
+                    }
+                }
+            }
+            channel = null
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing API response", e)
-            onError?.invoke("RESPONSE_PARSE_ERROR", e.message)
+            Log.e(TAG, "Error during gRPC cleanup", e)
+        }
+    }
+
+    /**
+     * Custom interceptor for API key authentication
+     */
+    private class ApiKeyInterceptor(private val apiKey: String) : ClientInterceptor {
+        override fun <ReqT, RespT> interceptCall(
+            method: MethodDescriptor<ReqT, RespT>,
+            callOptions: CallOptions,
+            next: Channel
+        ): ClientCall<ReqT, RespT> {
+            return object : ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
+                next.newCall(method, callOptions)
+            ) {
+                override fun start(responseListener: Listener<RespT>, headers: Metadata) {
+                    val newHeaders = Metadata()
+                    val apiKeyMetadataKey = Metadata.Key.of("X-Goog-Api-Key", Metadata.ASCII_STRING_MARSHALLER)
+                    newHeaders.put(apiKeyMetadataKey, apiKey)
+                    newHeaders.merge(headers)
+                    super.start(responseListener, newHeaders)
+                }
+            }
         }
     }
 
     fun destroy() {
         stopStreaming()
-        synchronized(audioBuffer) {
-            audioBuffer.reset()
-            bufferSize = 0
-        }
+        cleanupGrpcResources()
         Log.i(TAG, "Speech recognition manager destroyed")
     }
 
